@@ -131,7 +131,8 @@ const withRuntime = (p) => Object.assign(p, { busy: false, abort: null, queue: [
 // links: connections to other chats, drawn as wires on the Flow page.
 //   { to: paneId, mode: 'verify' | 'forward', count, lastAt, lastText, lastReply }
 // pos: node position on the Flow canvas.
-const newPane = (skillId = null) => withRuntime({ id: newId(), skillId, links: [], pos: null, messages: [] });
+// providerId: model chosen in the chat ('auto' = router picks). smart: Smart UI (formatted, interactive replies).
+const newPane = (skillId = null) => withRuntime({ id: newId(), skillId, providerId: 'auto', smart: true, links: [], pos: null, messages: [] });
 let panes = loadPanes();
 
 function loadPanes() {
@@ -140,6 +141,7 @@ function loadPanes() {
     if (Array.isArray(saved) && saved.length) {
       const list = saved.slice(0, MAX_PANES).map((p) => ({
         id: p.id || newId(), skillId: p.skillId ?? null, autoVerify: p.autoVerify ?? null,
+        providerId: typeof p.providerId === 'string' ? p.providerId : 'auto', smart: p.smart !== false,
         links: Array.isArray(p.links) ? p.links.map(({ flowing, ...l }) => l) : [],
         pos: p.pos && Number.isFinite(p.pos.x) ? p.pos : null,
         messages: (p.messages || []).filter((m) => !m.streaming),
@@ -252,6 +254,10 @@ async function readFile(file) {
 }
 
 Object.assign(ICONS, {
+  bolt: '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
+  cpu: '<rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/>',
+  arrowRight: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  refresh: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   chevUp: '<path d="m18 15-6-6-6 6"/>',
   chevDown: '<path d="m6 9 6 6 6-6"/>',
@@ -332,6 +338,98 @@ function updateSendState(p) {
   ui.sendBtn.classList.toggle('ready', p.busy || (hasInput && !loading));
 }
 
+// ---------- models: list of APIs with today's usage (for the model menu) ----------
+let providerList = [];
+let providersTimer = null;
+async function loadProviders() {
+  try {
+    providerList = await api('/api/providers');
+    panes.forEach((p) => { if (p.ui) renderModelPill(p); });
+  } catch {}
+}
+const queueProviderRefresh = (() => { let t = null; return () => { clearTimeout(t); t = setTimeout(loadProviders, 600); }; })();
+
+// "12 / 250 today" or "12 today · Unlimited".
+function usageText(p) {
+  const l = p.dailyLimit;
+  if (!l) return `${p.today.requests} today · Unlimited`;
+  const parts = [];
+  if (l.requests) parts.push(`${p.today.requests} / ${l.requests} today`);
+  if (l.tokens) parts.push(`${fmtNum(p.today.tokens)} / ${fmtNum(l.tokens)} tokens`);
+  return parts.join(' · ');
+}
+function usageShort(p) {
+  const l = p.dailyLimit;
+  if (!l) return '∞';
+  if (l.requests) return `${p.today.requests}/${l.requests}`;
+  return `${fmtNum(p.today.tokens)}/${fmtNum(l.tokens)}`;
+}
+const usageRatio = (p) => {
+  const l = p.dailyLimit;
+  if (!l) return 0;
+  return Math.max(l.requests ? p.today.requests / l.requests : 0, l.tokens ? p.today.tokens / l.tokens : 0);
+};
+
+function renderModelPill(p) {
+  const btn = p.ui.modelBtn;
+  btn.innerHTML = '';
+  if (!p.providerId || p.providerId === 'auto') {
+    const ready = providerList.filter((x) => x.state === 'ready').length;
+    btn.append(icon('bolt'), h('span', { class: 'mp-name' }, 'Auto'), h('span', { class: 'mp-usage' }, providerList.length ? `${ready} ready` : ''));
+    btn.title = 'Auto: the router picks the best available model for each message';
+    btn.classList.remove('warn');
+  } else {
+    const pr = providerList.find((x) => x.id === p.providerId);
+    btn.append(icon('cpu'), h('span', { class: 'mp-name' }, pr ? pr.name : 'Missing model'), pr ? h('span', { class: `mp-usage${usageRatio(pr) >= 0.9 ? ' high' : ''}` }, usageShort(pr)) : null);
+    btn.title = pr ? `${pr.name} · ${pr.model || ''} · ${usageText(pr)}${pr.state !== 'ready' ? ` · ${pr.state}` : ''}` : 'This model was removed. Pick another one.';
+    btn.classList.toggle('warn', !pr || pr.state !== 'ready');
+  }
+  btn.append(icon('chevDown'));
+}
+
+// Themed dropdown for choosing the model of one chat.
+function openModelMenu(p, refreshed = false) {
+  closeModelMenu();
+  const choose = (id) => { p.providerId = id; savePanes(); renderModelPill(p); closeModelMenu(); p.ui.textarea.focus(); };
+  const row = (opts) => h('button', { type: 'button', class: `mm-row${opts.active ? ' active' : ''}`, disabled: opts.disabled, onclick: () => choose(opts.id), role: 'menuitemradio', 'aria-checked': String(!!opts.active) },
+    h('span', { class: `mm-dot ${opts.dot}` }),
+    h('span', { class: 'mm-main' }, h('span', { class: 'mm-name' }, opts.name), h('span', { class: 'mm-sub' }, opts.sub)),
+    opts.usage ? h('span', { class: `mm-usage${opts.high ? ' high' : ''}` }, opts.usage) : null,
+    opts.active ? h('span', { class: 'mm-check' }, icon('check')) : null);
+  const ready = providerList.filter((x) => x.state === 'ready');
+  const menu = h('div', { class: 'model-menu', role: 'menu', id: 'modelMenu' },
+    h('div', { class: 'mm-title' }, 'Model'),
+    row({ id: 'auto', name: 'Auto', sub: `Best available for each message · ${ready.length} ready`, dot: ready.length ? 'ok' : 'off', active: !p.providerId || p.providerId === 'auto' }),
+    h('div', { class: 'mm-sep' }),
+    providerList.length ? providerList.map((x) => row({
+      id: x.id, name: x.name, sub: [x.model, x.state === 'ready' ? (x.free ? 'Free' : 'Paid') : x.state].filter(Boolean).join(' · '),
+      usage: usageText(x), high: usageRatio(x) >= 0.9, dot: x.state === 'ready' ? 'ok' : x.state === 'disabled' ? 'off' : 'warn',
+      active: p.providerId === x.id, disabled: x.state !== 'ready' && p.providerId !== x.id,
+    })) : h('div', { class: 'mm-empty' }, 'No APIs yet.'),
+    h('div', { class: 'mm-sep' }),
+    h('button', { type: 'button', class: 'mm-manage', onclick: () => { closeModelMenu(); showView('apis'); } }, icon('plus'), 'Add or manage APIs'));
+  document.body.append(menu);
+  const r = p.ui.modelBtn.getBoundingClientRect();
+  const w = Math.min(340, window.innerWidth - 16);
+  menu.style.width = w + 'px';
+  menu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + 'px';
+  menu.style.bottom = (window.innerHeight - r.top + 8) + 'px';
+  setTimeout(() => {
+    document.addEventListener('pointerdown', onMenuOutside, true);
+    document.addEventListener('keydown', onMenuKey, true);
+  });
+  menu.querySelector('.mm-row.active, .mm-row:not([disabled])')?.focus();
+  // Refresh usage numbers once, then redraw the open menu with them.
+  if (!refreshed) loadProviders().then(() => { if (document.getElementById('modelMenu') === menu) { closeModelMenu(); openModelMenu(p, true); } });
+}
+function onMenuOutside(e) { if (!e.target.closest('#modelMenu, .model-pill')) closeModelMenu(); }
+function onMenuKey(e) { if (e.key === 'Escape') { e.preventDefault(); closeModelMenu(); } }
+function closeModelMenu() {
+  document.getElementById('modelMenu')?.remove();
+  document.removeEventListener('pointerdown', onMenuOutside, true);
+  document.removeEventListener('keydown', onMenuKey, true);
+}
+
 const SUGGESTIONS = [
   { icon: 'file', color: '#d9480f', label: 'Summarize a file', prompt: 'Summarize the attached file in 5 bullet points.' },
   { icon: 'code', color: '#1c7ed6', label: 'Explain code', prompt: 'Explain this code step by step:\n' },
@@ -358,6 +456,11 @@ function buildPane(p) {
   // One round button: send when idle, stop while a reply is streaming.
   const sendBtn = h('button', { type: 'button', class: 'send-btn', onclick: () => (p.busy && !textarea.value.trim() && !p.pending.length ? p.abort && p.abort.abort() : submit()) });
   const tray = h('div', { class: 'tray hidden' });
+  const modelBtn = h('button', { type: 'button', class: 'pill model-pill', 'aria-haspopup': 'menu', onclick: () => (document.getElementById('modelMenu') ? closeModelMenu() : openModelMenu(p)) });
+  // Smart UI: formatted, interactive replies (headings, lists, tables, code with Copy, follow-up chips).
+  const smartBtn = h('button', { type: 'button', class: 'smart-toggle', role: 'switch',
+    onclick: () => { p.smart = !p.smart; savePanes(); renderPane(p); toast(p.smart ? 'Smart UI on: formatted, interactive replies' : 'Smart UI off: plain text replies', 'info', 2200); } },
+    h('span', { class: 'st-track' }, h('span', { class: 'st-knob' })), icon('spark'), h('span', { class: 'st-label' }, 'Smart UI'));
   function submit() {
     const text = textarea.value.trim();
     if (!text && !p.pending.length) return;
@@ -373,7 +476,9 @@ function buildPane(p) {
     h('div', { class: 'composer-box' },
       textarea,
       h('div', { class: 'toolbar' },
-        h('label', { class: 'skill-wrap' }, icon('spark'), select),
+        h('label', { class: 'skill-wrap', title: 'Skill' }, icon('spark'), select),
+        modelBtn,
+        smartBtn,
         sources,
         h('span', { class: 'grow' }),
         attachBtn, sendBtn),
@@ -400,8 +505,9 @@ function buildPane(p) {
     if (e.dataTransfer?.files?.length) addFiles(p, [...e.dataTransfer.files]);
   });
 
-  p.ui = { el, no, select, linksBtn, sendBtn, clearBtn, removeBtn, textarea, tray, sources, msgs: $('.msgs', el), streamEl: null };
+  p.ui = { el, no, select, linksBtn, sendBtn, clearBtn, removeBtn, textarea, tray, sources, modelBtn, smartBtn, msgs: $('.msgs', el), streamEl: null };
   renderPending(p);
+  renderModelPill(p);
 }
 
 function renderAll() {
@@ -463,6 +569,10 @@ function renderPane(p) {
   ui.sendBtn.title = p.busy ? 'Stop (type a message to queue it instead)' : 'Send';
   ui.sendBtn.setAttribute('aria-label', p.busy ? 'Stop' : 'Send');
   ui.clearBtn.disabled = p.busy;
+  ui.smartBtn.classList.toggle('on', p.smart);
+  ui.smartBtn.setAttribute('aria-checked', String(p.smart));
+  ui.smartBtn.title = p.smart ? 'Smart UI is on: formatted, interactive replies. Click for plain text.' : 'Smart UI is off: plain text replies. Click for formatted, interactive replies.';
+  renderModelPill(p);
   updateSendState(p);
 
   ui.msgs.innerHTML = '';
@@ -498,23 +608,82 @@ function renderMessage(p, m, idx) {
   const src = sourceName(m);
   if (src) box.append(h('div', { class: 'badge' }, `🔗 ${m.mode === 'forward' ? 'Forwarded' : m.auto ? 'Auto-verify' : 'Verify request'} from ${src}`), h('br'));
   if (m.attachments?.length) box.append(h('div', { class: 'files' }, m.attachments.map((a) => fileView(a))));
-  const text = h('span', { class: 'text' }, m.content);
+
+  if (m.role === 'error') {
+    box.append(h('span', { class: 'text' }, m.content));
+    if (/APIs page|Pick another model|switch to Auto/i.test(m.content)) {
+      box.append(h('div', { class: 'msg-actions' },
+        /APIs page/i.test(m.content) ? h('button', { class: 'ghost small', onclick: () => showView('apis') }, 'Open APIs') : null,
+        /Auto/i.test(m.content) ? h('button', { class: 'ghost small', onclick: () => { p.providerId = 'auto'; savePanes(); renderPane(p); } }, 'Switch to Auto') : null));
+    }
+    return box;
+  }
+  if (m.role !== 'assistant') { box.append(h('span', { class: 'text' }, m.content)); return box; }
+
+  box.classList.toggle('rich', p.smart);
+  const text = h('div', { class: 'text' });
   box.append(text);
-  if (m.role !== 'assistant') return box;
 
   if (m.streaming) {
     p.ui.streamEl = text;
     box.classList.add('streaming');
-    box.append(h('div', { class: 'meta' }, m.failed?.length ? `Retrying after ${m.failed.join(', ')} failed…` : 'Thinking…'));
+    if (m.content) fillAssistant(text, m.content, p.smart, true);
+    else text.append(thinkingDots(m.failed?.length ? `Retrying after ${m.failed.join(', ')} failed` : 'Thinking'));
     return box;
+  }
+  fillAssistant(text, m.content, p.smart, false);
+
+  if (p.smart && m.followups?.length && idx === p.messages.length - 1) {
+    box.append(h('div', { class: 'followups' }, m.followups.map((q) => h('button', { type: 'button', class: 'fu-chip', onclick: () => send(p, q) }, icon('arrowRight'), q))));
   }
   box.append(h('div', { class: 'meta' }, metaLine(m)));
   const targets = panes.filter((t) => t !== p);
+  const isLast = idx === p.messages.length - 1;
   box.append(h('div', { class: 'msg-actions' },
-    targets.length ? 'Verify in:' : null,
-    targets.map((t) => h('button', { class: 'ghost small', title: `Send this answer to ${label(t)} for checking`, onclick: () => forwardForVerify(p, idx, t) }, `${label(t)} (${skillById(t.skillId)?.name || '—'})`)),
-    h('button', { class: 'ghost small', title: 'Copy answer', onclick: (e) => copyText(m.content, e.currentTarget) }, 'Copy')));
+    h('button', { class: 'ghost small icon-text', title: 'Copy answer', onclick: (e) => copyText(m.content, e.currentTarget) }, icon('copy'), h('span', {}, 'Copy')),
+    isLast && !p.busy ? h('button', { class: 'ghost small icon-text', title: 'Ask again for a new answer', onclick: () => regenerate(p) }, icon('refresh'), h('span', {}, 'Regenerate')) : null,
+    targets.length ? h('span', { class: 'ma-label' }, 'Verify in:') : null,
+    targets.map((t) => h('button', { class: 'ghost small', title: `Send this answer to ${label(t)} for checking`, onclick: () => forwardForVerify(p, idx, t) }, `${label(t)} (${skillById(t.skillId)?.name || '—'})`))));
   return box;
+}
+
+// Animated "thinking" dots shown until the first words arrive.
+function thinkingDots(labelText) {
+  return h('span', { class: 'thinking', role: 'status' }, h('span', { class: 'dots' }, h('i'), h('i'), h('i')), h('span', { class: 'thinking-label' }, labelText));
+}
+
+// Fills an assistant bubble: formatted Markdown (Smart UI) or plain text, with a blinking caret while streaming.
+function fillAssistant(target, content, smart, streaming) {
+  target.replaceChildren();
+  let shown = streaming && smart ? MD.hideFollowupTail(content) : content;
+  // While streaming, close a half-written **bold** or `code` so raw markers don't flash.
+  if (streaming && smart) {
+    const outsideFences = shown.split(/```/).filter((_, i) => i % 2 === 0).join('');
+    if ((outsideFences.match(/\*\*/g) || []).length % 2) shown += '**';
+    else if ((outsideFences.replace(/\*\*/g, '').match(/`/g) || []).length % 2) shown += '`';
+  }
+  if (smart) {
+    const md = MD.renderMarkdown(shown);
+    target.append(md);
+    if (streaming) {
+      let last = md;
+      while (last.lastElementChild && !/^(PRE|TABLE|HR|BR)$/.test(last.lastElementChild.tagName) && !last.lastElementChild.classList.contains('md-pre')) last = last.lastElementChild;
+      (last.classList?.contains('md-pre') ? last.querySelector('code') : last).append(h('span', { class: 'caret' }));
+    }
+  } else {
+    target.append(h('span', { class: 'plain' }, shown));
+    if (streaming) target.append(h('span', { class: 'caret' }));
+  }
+}
+
+// Ask the last question again (drops the last answer).
+function regenerate(p) {
+  if (p.busy) return;
+  const lastUser = [...p.messages].reverse().find((m) => m.role === 'user');
+  if (!lastUser) return;
+  const at = p.messages.lastIndexOf(lastUser);
+  p.messages = p.messages.slice(0, at);
+  send(p, lastUser.content, null, false, lastUser.attachments || []);
 }
 
 function copyText(text, btn) {
@@ -529,18 +698,16 @@ function paintStream(p, msg) {
     paintQueued.delete(p);
     const ui = p.ui;
     if (!ui || p.removed || !ui.streamEl) return;
-    const nearBottom = ui.msgs.scrollHeight - ui.msgs.scrollTop - ui.msgs.clientHeight < 80;
-    ui.streamEl.textContent = msg.content;
-    const meta = ui.streamEl.parentElement.querySelector('.meta');
-    if (meta && msg.content) meta.textContent = 'Streaming…';
-    if (nearBottom) ui.msgs.scrollTop = ui.msgs.scrollHeight;
+    const nearBottom = ui.msgs.scrollHeight - ui.msgs.scrollTop - ui.msgs.clientHeight < 120;
+    fillAssistant(ui.streamEl, msg.content, p.smart, true);
+    if (nearBottom) ui.msgs.scrollTo({ top: ui.msgs.scrollHeight, behavior: 'smooth' });
   });
 }
 
 async function streamChat(skillId, history, signal, msg, p) {
   const res = await fetch('/api/chat/stream', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
-    body: JSON.stringify({ skillId, messages: history }),
+    body: JSON.stringify({ skillId, messages: history, providerId: p.providerId || 'auto', rich: !!p.smart }),
   });
   if (!res.ok) { const b = await res.json().catch(() => ({})); handleAuthError(res.status, b); throw new Error(b.error || res.statusText); }
   const reader = res.body.getReader();
@@ -594,8 +761,10 @@ async function send(p, text, from = null, auto = false, attachments = [], trail 
   let ok = false;
   try {
     const r = await streamChat(skill.id, history, p.abort.signal, msg, p);
-    Object.assign(msg, { content: r.reply, provider: r.provider, model: r.model, ms: r.ms, tried: r.tried, usage: r.usage, cost: r.cost });
+    const { body, followups } = p.smart ? MD.splitFollowups(r.reply) : { body: r.reply, followups: [] };
+    Object.assign(msg, { content: body || r.reply, followups, provider: r.provider, model: r.model, ms: r.ms, tried: r.tried, usage: r.usage, cost: r.cost });
     delete msg.streaming;
+    queueProviderRefresh(); // usage numbers in the model menu
     delete msg.failed;
     ok = true;
   } catch (err) {
@@ -789,7 +958,7 @@ async function deleteSkill(id) {
 let apisTimer = null;
 let apiEditing = null; // null = no form, {} = new API, provider status object = editing
 const testResults = {};
-const TYPE_LABELS = { openai: 'OpenAI-compatible', anthropic: 'Anthropic Claude', gemini: 'Google Gemini', mock: 'Mock (testing)' };
+const TYPE_LABELS = { openai: 'OpenAI-compatible', anthropic: 'Anthropic Claude', gemini: 'Google Gemini' };
 // Model names are examples; check each provider's current model list.
 const PRESETS = [
   { label: 'Groq', name: 'Groq', type: 'openai', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile', free: true },
@@ -799,7 +968,7 @@ const PRESETS = [
   { label: 'DeepSeek', name: 'DeepSeek', type: 'openai', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
   { label: 'OpenAI', name: 'OpenAI', type: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', vision: true },
   { label: 'Ollama (local, no key)', name: 'Ollama', type: 'openai', baseUrl: 'http://localhost:11434/v1', model: 'llama3.2', free: true },
-  { label: 'Google Gemini', name: 'Gemini', type: 'gemini', model: 'gemini-2.5-flash', free: true },
+  { label: 'Google Gemini', name: 'Gemini', type: 'gemini', model: 'gemini-3.8-flash', free: true },
   { label: 'Claude Opus 5.5', name: 'Claude Opus 5.5', type: 'anthropic', model: 'claude-opus-5-5', pricing: { input: 4, output: 20 } },
   { label: 'Claude Sonnet 5.5', name: 'Claude Sonnet 5.5', type: 'anthropic', model: 'claude-sonnet-5-5', pricing: { input: 2, output: 10 } },
   { label: 'Claude Haiku 5.5', name: 'Claude Haiku 5.5', type: 'anthropic', model: 'claude-haiku-5-5', pricing: { input: 0.1, output: 0.5 } },
@@ -807,7 +976,7 @@ const PRESETS = [
 
 function limitText(p) {
   const l = p.dailyLimit;
-  if (!l) return `${p.today.requests} req`;
+  if (!l) return `${p.today.requests} req · Unlimited`;
   const parts = [];
   if (l.requests) parts.push(`${p.today.requests}/${l.requests} req`);
   if (l.tokens) parts.push(`${fmtNum(p.today.tokens)}/${fmtNum(l.tokens)} tok`);
@@ -834,7 +1003,7 @@ function renderApisPage() {
 async function refreshApis() {
   if (currentView !== 'apis') return;
   let list;
-  try { list = await api('/api/providers'); } catch (err) { $('#apiGrid').innerHTML = ''; $('#apiGrid').append(h('p', { class: 'note' }, 'Could not load: ' + err.message)); return; }
+  try { list = await api('/api/providers'); providerList = list; panes.forEach((x) => { if (x.ui) renderModelPill(x); }); } catch (err) { $('#apiGrid').innerHTML = ''; $('#apiGrid').append(h('p', { class: 'note' }, 'Could not load: ' + err.message)); return; }
   const ready = list.filter((p) => p.state === 'ready').length;
   const summary = $('#apiSummary');
   summary.innerHTML = '';
@@ -932,8 +1101,6 @@ function renderApiForm() {
     const t = f.type.value;
     rows.baseUrl.classList.toggle('hidden', t !== 'openai');
     rows.vision.classList.toggle('hidden', t !== 'openai');
-    rows.model.classList.toggle('hidden', t === 'mock');
-    rows.key.classList.toggle('hidden', t === 'mock');
   };
   f.type.addEventListener('change', sync);
 
@@ -1358,6 +1525,9 @@ setTheme(document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light');
       : 'Changes can’t be saved on this server’s disk; they last until it restarts.', 'info', 15000);
   }
   try { skills = await api('/api/skills'); } catch (err) { toast('Could not load skills: ' + err.message, 'error', 0); return; }
+  await loadProviders();
+  providersTimer = setInterval(() => { if (currentView === 'chats' && !document.hidden) loadProviders(); }, 30000);
+  if (!providerList.some((x) => x.state === 'ready')) toast('No API is ready yet. Open APIs to add one (Groq and Gemini have free tiers).', 'info', 12000);
   panes.forEach((p, i) => { if (!skillById(p.skillId)) p.skillId = skills[i % skills.length]?.id ?? null; });
   savePanes();
   renderAll();

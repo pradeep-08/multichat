@@ -1,9 +1,14 @@
 {
   "name": "multichat",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
-  "description": "Three side-by-side chat bots with skills, cross-verification and an auto-selecting API router",
+  "description": "Side-by-side AI chats with skills, a flow canvas to connect them, and an auto-selecting API router",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=16"
+  },
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "check": "node --check server.js && node --check src/router.js && node --check src/storage.js && node --check src/auth.js && node --check public/app.js"
   }
 }

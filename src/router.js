@@ -4,7 +4,6 @@ const storage = require('./storage');
 const { textWithFiles, neededKinds } = require('./attachments');
 
 const adapters = {
-  mock: require('./adapters/mock'),
   openai: require('./adapters/openai'),
   anthropic: require('./adapters/anthropic'),
   gemini: require('./adapters/gemini'),
@@ -15,7 +14,8 @@ const RATE_LIMIT_COOLDOWN_MS = 5 * 60_000;
 const AUTH_COOLDOWN_MS = 30 * 60_000;
 
 // Raw provider configs as stored (apiKey may be "env:NAME", a saved key, or absent for keyless providers).
-let rawConfigs = storage.read('providers', []);
+// Entries of an unknown type (such as the old "mock" testing API) are dropped.
+let rawConfigs = (storage.read('providers', []) || []).filter((p) => p && adapters[p.type]);
 
 function normalize(p) {
   const fromEnv = typeof p.apiKey === 'string' && p.apiKey.startsWith('env:');
@@ -24,7 +24,7 @@ function normalize(p) {
     ...p,
     name: p.name || p.id,
     apiKey,
-    // A provider without an apiKey field (mock, local Ollama) needs no key.
+    // A provider without an apiKey field (for example local Ollama) needs no key.
     hasKey: p.apiKey === undefined || !!apiKey,
     keyHint: fromEnv ? p.apiKey.slice(4) : null,
     keySource: p.apiKey === undefined ? 'none' : fromEnv ? p.apiKey : 'saved',
@@ -103,8 +103,8 @@ function ranked(pinned, kinds = []) {
     .filter((p) => !pinned || pinned === 'auto' || p.id === pinned)
     .filter(available)
     .filter((p) => canRead(p, kinds))
-    // Mock APIs are a last resort; then free before paid; then fastest / most reliable.
-    .sort((a, b) => (a.type === 'mock') - (b.type === 'mock') || (b.free === true) - (a.free === true) || score(a) - score(b));
+    // Free before paid; then fastest / most reliable.
+    .sort((a, b) => (b.free === true) - (a.free === true) || score(a) - score(b));
 }
 
 function cooldownFor(err) {
@@ -118,18 +118,30 @@ function cooldownFor(err) {
  * Runs one chat turn. onToken(text) streams text; onReset(nextProvider) fires when a provider
  * failed mid-stream and the client must discard the partial text before the next provider answers.
  */
-async function chat({ skill, messages, onToken = () => {}, onReset = () => {}, signal }) {
+// Added to the system prompt when the chat's Smart UI switch is on.
+const RICH_NOTE = 'Format replies in GitHub-flavored Markdown when it helps readability: short headings, bullet or numbered lists, '
+  + '**bold** for key terms, tables for comparisons, and fenced code blocks with a language tag for code. Keep paragraphs short. '
+  + 'After the answer, on its own last line, write "Follow-ups:" followed by up to three short follow-up questions the user might ask next, '
+  + 'separated by " | ". Leave that line out when no follow-up makes sense.';
+
+// providerId: the model chosen in the chat ("auto" or empty = let the router pick; otherwise overrides the skill's pin).
+async function chat({ skill, messages, providerId, rich = false, onToken = () => {}, onReset = () => {}, signal }) {
   const kinds = neededKinds(messages);
-  const candidates = ranked(skill.provider, kinds);
+  const pin = providerId && providerId !== 'auto' ? providerId : skill.provider;
+  const candidates = ranked(pin, kinds);
   if (!candidates.length) {
-    const pinned = skill.provider && skill.provider !== 'auto' ? ` (skill is pinned to "${skill.provider}")` : '';
-    if (kinds.length && ranked(skill.provider).length) {
+    const chosen = pin && pin !== 'auto' ? providers.find((p) => p.id === pin) : null;
+    if (pin && pin !== 'auto' && !chosen) throw new Error('The chosen model no longer exists. Pick another one in the model menu.');
+    if (chosen) throw new Error(`${chosen.name} is not available right now (${status().find((s) => s.id === chosen.id)?.state || 'unavailable'}). Pick another model or switch to Auto.`);
+    if (!providers.some((p) => p.enabled)) throw new Error('No API is set up yet. Open the APIs page and add one (for example Groq or Gemini, both have free tiers).');
+    const pinned = '';
+    if (kinds.length && ranked(pin).length) {
       const what = kinds.map((k) => (k === 'pdf' ? 'PDFs' : 'images')).join(' and ');
       throw new Error(`None of the available APIs${pinned} can read ${what}. Add a Claude or Gemini API key, or set "vision": true on an OpenAI-compatible vision model.`);
     }
-    throw new Error(`No provider available${pinned} — all are disabled, missing keys, cooling down or over their daily limit`);
+    throw new Error(`No API is available right now${pinned}: they are turned off, missing keys, cooling down or over their daily limit. Check the APIs page.`);
   }
-  const system = skill.instructions || '';
+  const system = [skill.instructions || '', rich ? RICH_NOTE : ''].filter(Boolean).join('\n\n');
   const errors = [];
   for (const p of candidates) {
     const s = stats[p.id];
@@ -210,7 +222,7 @@ function resetStats() {
 }
 
 // ---------- provider management (add / edit / delete from the UI) ----------
-const TYPES = ['openai', 'anthropic', 'gemini', 'mock'];
+const TYPES = ['openai', 'anthropic', 'gemini'];
 const badRequest = (msg) => Object.assign(new Error(msg), { status: 400 });
 
 function uniqueId(name) {
@@ -234,11 +246,9 @@ function sanitize(input, existing) {
   if (!TYPES.includes(m.type)) throw badRequest('Choose an API type');
   const out = { id: existing ? existing.id : uniqueId(name), name, type: m.type, free: !!m.free, enabled: m.enabled !== false };
 
-  if (m.type !== 'mock') {
-    const model = String(m.model || '').trim();
-    if (!model) throw badRequest('Model is required');
-    out.model = model;
-  }
+  const model = String(m.model || '').trim();
+  if (!model) throw badRequest('Model is required');
+  out.model = model;
   if (m.type === 'openai') {
     const url = String(m.baseUrl || '').trim().replace(/\/+$/, '');
     let ok = false;
@@ -252,7 +262,6 @@ function sanitize(input, existing) {
   let key = existing ? existing.apiKey : undefined;
   if (typeof input.apiKey === 'string' && input.apiKey.trim()) key = input.apiKey.trim();
   if (input.clearKey) key = undefined;
-  if (m.type === 'mock') key = undefined;
   if ((m.type === 'anthropic' || m.type === 'gemini') && !key) throw badRequest('This API type needs an API key (or env:VARIABLE_NAME)');
   if (key !== undefined) out.apiKey = key;
 
@@ -265,8 +274,7 @@ function sanitize(input, existing) {
   const maxTokens = optNumber(m.maxTokens, 'Max tokens', true);
   if (maxTokens) out.maxTokens = maxTokens;
   // Advanced fields that are only set in the JSON file are kept as they are.
-  for (const k of ['headers', 'failRate', 'effort', 'fallbacks']) if (existing && existing[k] !== undefined) out[k] = existing[k];
-  if (!existing && m.type === 'mock' && input.failRate !== undefined) out.failRate = optNumber(input.failRate, 'Fail rate');
+  for (const k of ['headers', 'effort', 'fallbacks']) if (existing && existing[k] !== undefined) out[k] = existing[k];
   return out;
 }
 

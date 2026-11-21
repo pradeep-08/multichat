@@ -4,8 +4,10 @@ Several AI chats side by side. Each chat has its own **skill** (role and instruc
 **verified or forwarded** between chats (drawn as wires on the **Flow** page), and a router picks a free,
 healthy and fast **API** for every message, failing over when one breaks.
 
-- 1 to 6 chats, streaming replies, file attachments (text, code, CSV, images, PDF)
-- APIs: OpenAI-compatible (Groq, OpenRouter, Together, Mistral, DeepSeek, OpenAI, Ollama), Anthropic Claude, Google Gemini, plus a mock API for testing
+- 1 to 6 chats, streaming replies with a smooth typing animation, file attachments (text, code, CSV, images, PDF)
+- **Smart UI** switch per chat: formatted, interactive replies (headings, lists, tables, code blocks with Copy, follow-up suggestions, Regenerate), or plain text
+- **Model picker** per chat: Auto (router picks) or a specific API, with today's usage (or "Unlimited")
+- APIs: OpenAI-compatible (Groq, OpenRouter, Together, Mistral, DeepSeek, OpenAI, Ollama), Anthropic Claude, Google Gemini
 - APIs page: add, edit, test and delete APIs; tokens, cost and daily limits per API
 - Light and dark theme
 - No npm dependencies
@@ -19,6 +21,7 @@ npm start
 ```
 
 Open http://localhost:3000. The server only accepts connections from this computer, so no password is needed.
+With no API key set, chats explain how to add one; Groq and Gemini both have free tiers.
 
 Add API keys on the **APIs** page (they are saved in `config/providers.json`, which git ignores), or as
 environment variables that the provider config refers to, for example `env:GROQ_API_KEY`:
@@ -42,6 +45,8 @@ $env:GROQ_API_KEY="..."; $env:ANTHROPIC_API_KEY="..."; npm start
 | `DATA_DIR` | Recommended on servers | Folder for settings, skills and usage stats. Point it at a persistent disk |
 | `SESSION_SECRET` | Optional | Extra secret for sign-in cookies. Changing it signs everyone out |
 | `HOST` / `PORT` | Optional | Address and port to listen on. Render, Railway and Fly.io are detected automatically |
+
+Health check for uptime monitors: `GET /api/health` returns `{ "ok": true, "version": "…" }`.
 
 ### Render or Railway (recommended)
 
@@ -73,10 +78,10 @@ Limits on Vercel:
 server.js            HTTP server: static files + JSON API (exports `handler` for serverless)
 api/index.js         Vercel entry point
 src/router.js        Picks an API, fails over, tracks stats, manages the API list
-src/adapters/        One file per API type (openai, anthropic, gemini, mock)
+src/adapters/        One file per API type (openai, anthropic, gemini)
 src/storage.js       Where settings, skills and stats are saved (DATA_DIR, read-only disks)
 src/auth.js          APP_PASSWORD sign-in with signed cookies
-public/              The web app (no build step)
+public/              The web app (no build step); markdown.js renders Smart UI replies safely
 config/providers.example.json   Starter API list (keys come from environment variables)
 data/skills.example.json        Starter skills
 ```

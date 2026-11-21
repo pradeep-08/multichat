@@ -1,18 +1,15 @@
 [
-  { "id": "mock-free", "name": "Mock (free)", "type": "mock", "free": true, "enabled": true, "failRate": 0.15 },
-  { "id": "mock-paid", "name": "Mock (paid)", "type": "mock", "free": false, "enabled": true, "failRate": 0 },
-
   { "id": "groq-free", "name": "Groq (free)", "type": "openai", "free": true, "enabled": true,
-    "baseUrl": "https://api.groq.com/openai/v1", "model": "llama-3.3-70b-versatile", "apiKey": "env:GROQ_API_KEY", "vision": false,
+    "baseUrl": "https://api.groq.com/openai/v1", "model": "openai/gpt-oss-120b", "apiKey": "env:GROQ_API_KEY", "vision": false,
     "dailyLimit": { "requests": 1000 } },
+
+  { "id": "gemini-free", "name": "Gemini (free tier)", "type": "gemini", "free": true, "enabled": true,
+    "model": "gemini-3.8-flash", "apiKey": "env:GEMINI_API_KEY",
+    "dailyLimit": { "requests": 250 } },
 
   { "id": "openrouter-free", "name": "OpenRouter (free)", "type": "openai", "free": true, "enabled": true,
     "baseUrl": "https://openrouter.ai/api/v1", "model": "meta-llama/llama-3.3-70b-instruct:free", "apiKey": "env:OPENROUTER_API_KEY",
     "dailyLimit": { "requests": 50 } },
-
-  { "id": "gemini-free", "name": "Gemini (free tier)", "type": "gemini", "free": true, "enabled": true,
-    "model": "gemini-2.5-flash", "apiKey": "env:GEMINI_API_KEY",
-    "dailyLimit": { "requests": 250 } },
 
   { "id": "claude", "name": "Claude Opus 5.5", "type": "anthropic", "free": false, "enabled": true,
     "model": "claude-opus-5-5", "apiKey": "env:ANTHROPIC_API_KEY", "maxTokens": 16000,

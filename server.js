@@ -14,6 +14,45 @@ const ON_PLATFORM = !!(process.env.RENDER || process.env.RAILWAY_ENVIRONMENT || 
 const HOST = process.env.HOST || (ON_PLATFORM ? '0.0.0.0' : '127.0.0.1');
 const ACCESS = auth.accessMode(HOST);
 const PUBLIC_DIR = path.join(__dirname, 'public');
+const VERSION = require('./package.json').version;
+
+// Security headers on every response. The UI only loads its own files plus Google Fonts.
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' https://fonts.gstatic.com",
+  "img-src 'self' data: blob:",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+function securityHeaders(req, res) {
+  res.setHeader('Content-Security-Policy', CSP);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  if (req.headers['x-forwarded-proto'] === 'https') res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+}
+
+// Wrong-password limit: 10 failed attempts per address per 15 minutes.
+const loginFails = new Map();
+const LOGIN_WINDOW_MS = 15 * 60_000;
+const clientIp = (req) => String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || 'unknown';
+function loginBlocked(ip) {
+  const e = loginFails.get(ip);
+  if (!e || Date.now() - e.first > LOGIN_WINDOW_MS) { loginFails.delete(ip); return false; }
+  return e.count >= 10;
+}
+function noteLoginFail(ip) {
+  const e = loginFails.get(ip);
+  if (!e || Date.now() - e.first > LOGIN_WINDOW_MS) loginFails.set(ip, { first: Date.now(), count: 1 });
+  else e.count++;
+  if (loginFails.size > 5000) loginFails.clear(); // keep memory bounded
+}
 const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.json': 'application/json', '.svg': 'image/svg+xml' };
 
 // Skills: data/skills.json (git-ignored, your own) or, on a fresh copy, data/skills.example.json.
@@ -59,16 +98,21 @@ function validSkill(s) {
 
 async function handleApi(req, res, url) {
   // ---- public endpoints: session state and login ----
+  if (url.pathname === '/api/health' && req.method === 'GET') return sendJson(res, 200, { ok: true, version: VERSION });
   if (url.pathname === '/api/session' && req.method === 'GET') {
     return sendJson(res, 200, { mode: ACCESS, authed: ACCESS === 'open' || (ACCESS === 'password' && auth.hasSession(req)), storage: storage.status() });
   }
   if (url.pathname === '/api/login' && req.method === 'POST') {
     if (ACCESS !== 'password') return sendJson(res, 400, { error: 'Login is not enabled on this server' });
+    const ip = clientIp(req);
+    if (loginBlocked(ip)) return sendJson(res, 429, { error: 'Too many wrong passwords. Try again in 15 minutes.' });
     const { password } = await readBody(req, 10_000);
     if (!auth.checkPassword(password)) {
+      noteLoginFail(ip);
       await new Promise((r) => setTimeout(r, 800)); // slow down password guessing
       return sendJson(res, 401, { error: 'Wrong password' });
     }
+    loginFails.delete(ip);
     return sendJson(res, 200, { ok: true }, { 'Set-Cookie': auth.sessionCookie(req) });
   }
   if (url.pathname === '/api/logout' && req.method === 'POST') return sendJson(res, 200, { ok: true }, { 'Set-Cookie': auth.clearCookie(req) });
@@ -118,7 +162,8 @@ async function handleApi(req, res, url) {
   }
 
   if ((url.pathname === '/api/chat' || url.pathname === '/api/chat/stream') && req.method === 'POST') {
-    const { skillId, messages } = await readBody(req, MAX_CHAT_BODY);
+    const { skillId, messages, providerId, rich } = await readBody(req, MAX_CHAT_BODY);
+    const chosen = typeof providerId === 'string' && /^[a-z0-9-]{1,80}$/.test(providerId) ? providerId : 'auto';
     const skill = readSkills().find((s) => s.id === skillId);
     if (!skill) return sendJson(res, 400, { error: 'Unknown skill' });
     if (!Array.isArray(messages) || !messages.length) return sendJson(res, 400, { error: 'No messages' });
@@ -131,7 +176,7 @@ async function handleApi(req, res, url) {
       .filter((m) => m.content || m.attachments);
     if (!clean.length || clean[clean.length - 1].role !== 'user') return sendJson(res, 400, { error: 'Last message must be from the user' });
 
-    if (url.pathname === '/api/chat') return sendJson(res, 200, await router.chat({ skill, messages: clean }));
+    if (url.pathname === '/api/chat') return sendJson(res, 200, await router.chat({ skill, messages: clean, providerId: chosen, rich: !!rich }));
 
     // Streaming: newline-delimited JSON events {type: token|reset|done|error}.
     const ac = new AbortController();
@@ -140,7 +185,7 @@ async function handleApi(req, res, url) {
     const emit = (ev) => { if (!res.writableEnded) res.write(JSON.stringify(ev) + '\n'); };
     try {
       const result = await router.chat({
-        skill, messages: clean, signal: ac.signal,
+        skill, messages: clean, providerId: chosen, rich: !!rich, signal: ac.signal,
         onToken: (text) => emit({ type: 'token', text }),
         onReset: (failed) => emit({ type: 'reset', failed }),
       });
@@ -161,13 +206,14 @@ function serveStatic(res, url) {
   if (!file.startsWith(PUBLIC_DIR + path.sep)) { res.writeHead(403); return res.end(); }
   fs.readFile(file, (err, data) => {
     if (err) { res.writeHead(404); return res.end('Not found'); }
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
+    res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
     res.end(data);
   });
 }
 
 async function handler(req, res) {
   const url = new URL(req.url, 'http://localhost');
+  securityHeaders(req, res);
   try {
     if (url.pathname.startsWith('/api/')) await handleApi(req, res, url);
     else serveStatic(res, url);
@@ -178,13 +224,19 @@ async function handler(req, res) {
 }
 module.exports = { handler };
 
-if (require.main === module) http.createServer(handler).on('error', (err) => {
-  if (err.code === 'EADDRINUSE') console.error(`Port ${PORT} is already in use. Start on another port, e.g.  PORT=3001 npm start  (PowerShell: $env:PORT=3001; npm start)`);
-  else console.error(err);
-  process.exit(1);
-}).listen(PORT, HOST, () => {
-  console.log(`MultiChat running at http://localhost:${PORT}${HOST === '127.0.0.1' ? ' (this computer only)' : ` (listening on ${HOST})`}`);
-  console.log(`Providers from ${router.configFile}`);
-  if (ACCESS === 'password') console.log('Login required (APP_PASSWORD is set).');
-  if (ACCESS === 'locked') console.warn('WARNING: reachable from the network without APP_PASSWORD. The API stays locked until you set it.');
-});
+if (require.main === module) {
+  const server = http.createServer(handler);
+  const shutdown = () => { server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 5000).unref(); };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') console.error(`Port ${PORT} is already in use. Start on another port, e.g.  PORT=3001 npm start  (PowerShell: $env:PORT=3001; npm start)`);
+    else console.error(err);
+    process.exit(1);
+  }).listen(PORT, HOST, () => {
+    console.log(`MultiChat running at http://localhost:${PORT}${HOST === '127.0.0.1' ? ' (this computer only)' : ` (listening on ${HOST})`}`);
+    console.log(`Providers from ${router.configFile}`);
+    if (ACCESS === 'password') console.log('Login required (APP_PASSWORD is set).');
+    if (ACCESS === 'locked') console.warn('WARNING: reachable from the network without APP_PASSWORD. The API stays locked until you set it.');
+  });
+}

@@ -20,7 +20,7 @@ that picks a free/healthy provider first and ranks by measured performance.
 Browser (public/)                     Node server (server.js)
 ┌──────────┬──────────┬──────────┐    /api/skills   GET/POST -> data/skills.json
 │ Chat 1   │ Chat 2   │ Chat 3   │    /api/chat     POST {skillId, messages}
-│ skill A  │ skill B  │ skill C  │ ─►      └─► src/router.js ─► adapter (mock | openai | anthropic | gemini ...)
+│ skill A  │ skill B  │ skill C  │ ─►      └─► src/router.js ─► adapter (openai | anthropic | gemini)
 └──────────┴──────────┴──────────┘    /api/providers GET -> live stats
    "Verify in Chat N" = forward Q+A as a new message to another pane
 ```
@@ -36,10 +36,11 @@ Browser (public/)                     Node server (server.js)
 ## 4. Phases
 | Phase | Scope | Status |
 |---|---|---|
-| 1 | UI: 3 panes, skills manager, verify-forwarding, APIs panel, router with **mock** providers | ✅ done |
+| 1 | UI: 3 panes, skills manager, verify-forwarding, APIs panel, router | ✅ done |
 | 2 | Real adapters: OpenAI-compatible (Groq, OpenRouter, Together, Gemini-compat, local Ollama), Anthropic Claude, Gemini native. Built on Node's `https` module, so Node 16 works | ✅ done |
 | 3 | Streaming replies, token/cost tracking per provider, daily quota limits for free tiers (stats persisted in `data/usage.json`) | ✅ done |
 | 4 | Auto-verify toggle per pane (original questions only, so no ping-pong loops), queue when a pane is busy, Stop button, Markdown export | ✅ done |
+| 5 | Production: mocks removed, Smart UI replies, per-chat model picker with usage, password sign-in, security headers, health check | ✅ done |
 
 ## 5. Provider config format (phase 2) — `config/providers.json`
 ```json

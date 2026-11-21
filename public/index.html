@@ -4,13 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MultiChat</title>
-  <script>
-    // Apply saved theme / sidebar state before paint (light theme and open sidebar are the defaults).
-    try {
-      document.documentElement.dataset.theme = localStorage.getItem('multichat.theme') === 'dark' ? 'dark' : 'light';
-      if (localStorage.getItem('multichat.sidebar') === 'collapsed') document.documentElement.classList.add('sb-collapsed');
-    } catch {}
-  </script>
+  <script src="boot.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
@@ -51,6 +45,7 @@
   <section id="view-skills" class="page view hidden" aria-label="Skills"></section>
   <section id="view-apis" class="page view hidden" aria-label="APIs"></section>
 
+  <script src="markdown.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
