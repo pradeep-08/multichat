@@ -1,0 +1,9 @@
+{
+  "name": "multichat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Three side-by-side chat bots with skills, cross-verification and an auto-selecting API router",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

@@ -1,0 +1,5 @@
+node_modules/
+config/providers.json
+data/usage.json
+# Your own skills stay local; data/skills.example.json is the starter set.
+data/skills.json

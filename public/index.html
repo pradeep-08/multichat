@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MultiChat</title>
+  <script>
+    // Apply saved theme / sidebar state before paint (light theme and open sidebar are the defaults).
+    try {
+      document.documentElement.dataset.theme = localStorage.getItem('multichat.theme') === 'dark' ? 'dark' : 'light';
+      if (localStorage.getItem('multichat.sidebar') === 'collapsed') document.documentElement.classList.add('sb-collapsed');
+    } catch {}
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <aside class="sidebar" aria-label="Main">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3l1.9 5.6 5.6 1.9-5.6 1.9L12 18l-1.9-5.6-5.6-1.9 5.6-1.9z"/></svg></span>
+      <h1>MultiChat</h1>
+    </div>
+
+    <button id="btnAddChat" class="new-chat" title="New chat"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span class="lbl">New chat</span></button>
+
+    <div class="sb-section">
+      <div class="sb-title">Chats</div>
+      <nav id="chatList" class="chat-list"></nav>
+    </div>
+
+    <div class="sb-section">
+      <div class="sb-title">Workspace</div>
+      <button id="btnChats" class="nav-item" data-view="chats" title="Chats"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span class="lbl">Chats</span></button>
+      <button id="btnFlow" class="nav-item" data-view="flow" title="Flow — connect chats"><svg viewBox="0 0 24 24"><rect x="2" y="3" width="7" height="6" rx="1.5"/><rect x="15" y="15" width="7" height="6" rx="1.5"/><path d="M9 6h3a2 2 0 0 1 2 2v8a2 2 0 0 0 2 2h-1"/></svg><span class="lbl">Flow</span></button>
+      <button id="btnSkills" class="nav-item" data-view="skills" title="Skills"><svg viewBox="0 0 24 24"><path d="M12 3l1.9 5.6 5.6 1.9-5.6 1.9L12 18l-1.9-5.6-5.6-1.9 5.6-1.9z"/></svg><span class="lbl">Skills</span></button>
+      <button id="btnApis" class="nav-item" data-view="apis" title="APIs"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></svg><span class="lbl">APIs</span></button>
+      <button id="btnExport" class="nav-item" title="Export all chats as Markdown"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg><span class="lbl">Export</span></button>
+    </div>
+
+    <div class="sb-bottom">
+      <button id="btnTheme" class="nav-item" title="Switch theme"></button>
+      <button id="btnCollapse" class="nav-item collapse-btn" title="Collapse sidebar" aria-label="Collapse sidebar"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg><span class="lbl">Collapse</span></button>
+    </div>
+  </aside>
+
+  <main id="panes" class="panes view"></main>
+  <section id="view-flow" class="flow view hidden" aria-label="Flow"></section>
+  <section id="view-skills" class="page view hidden" aria-label="Skills"></section>
+  <section id="view-apis" class="page view hidden" aria-label="APIs"></section>
+
+  <script src="app.js"></script>
+</body>
+</html>
