@@ -43,6 +43,7 @@ $env:GROQ_API_KEY="..."; $env:ANTHROPIC_API_KEY="..."; npm start
 | `APP_PASSWORD` | Yes, when hosted | Password for the sign-in screen |
 | `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY` | At least one | API keys used by `config/providers.example.json` |
 | `DATA_DIR` | Recommended on servers | Folder for settings, skills and usage stats. Point it at a persistent disk |
+| `SKILLS_JSON` | Optional | Your skills as JSON (same format as `data/skills.json`). Use it on Vercel to deploy private skills without putting them in the repo |
 | `SESSION_SECRET` | Optional | Extra secret for sign-in cookies. Changing it signs everyone out |
 | `HOST` / `PORT` | Optional | Address and port to listen on. Render, Railway and Fly.io are detected automatically |
 

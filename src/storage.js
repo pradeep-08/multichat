@@ -35,9 +35,18 @@ let writeError = null;
 
 const clone = (v) => JSON.parse(JSON.stringify(v));
 
+// Optional environment variables with JSON content, used when no saved file exists yet.
+// SKILLS_JSON lets you deploy your own (private) skills to Vercel without putting them in the repo.
+const ENV_SEEDS = { skills: 'SKILLS_JSON', providers: 'PROVIDERS_JSON' };
+
 function read(name, fallback) {
   if (name in memory) return clone(memory[name]);
-  for (const f of [FILES[name].file, ...FILES[name].seeds]) {
+  const envName = ENV_SEEDS[name];
+  const sources = [FILES[name].file, ...(envName && process.env[envName] ? [`env:${envName}`] : []), ...FILES[name].seeds];
+  for (const f of sources) {
+    if (f.startsWith('env:')) {
+      try { const value = JSON.parse(process.env[f.slice(4)]); loadedFrom[name] = f; return value; } catch { throw new Error(`The ${f.slice(4)} environment variable is not valid JSON`); }
+    }
     let text;
     try { text = fs.readFileSync(f, 'utf8'); } catch { continue; }
     try {
@@ -69,6 +78,7 @@ function write(name, value) {
 function describe(name) {
   if (name in memory) return 'memory (not saved)';
   const f = loadedFrom[name];
+  if (f && f.startsWith('env:')) return `${f.slice(4)} environment variable`;
   return f ? path.relative(ROOT, f) || f : 'built-in defaults';
 }
 

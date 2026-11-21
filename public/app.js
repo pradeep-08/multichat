@@ -560,8 +560,12 @@ function renderPane(p) {
   skills.forEach((s) => ui.select.append(h('option', { value: s.id, selected: s.id === p.skillId }, s.name)));
   ui.select.title = skillById(p.skillId)?.description || 'Skill for this chat';
   const targets = p.links.map((l) => paneById(l.to)).filter(Boolean);
+  const sources = panes.filter((o) => o !== p && o.links.some((l) => l.to === p.id));
   ui.linksBtn.innerHTML = '';
-  ui.linksBtn.append(icon('link'), h('span', {}, targets.length ? `→ ${targets.map(label).join(', ')}` : 'Connect'));
+  const linkText = [sources.length ? `← ${sources.map(label).join(', ')}` : '', targets.length ? `→ ${targets.map(label).join(', ')}` : ''].filter(Boolean).join('  ');
+  ui.linksBtn.append(icon('link'), h('span', {}, linkText || 'Connect'));
+  ui.linksBtn.title = [sources.length ? `Can see the latest answer of ${sources.map(label).join(', ')} (ask "verify ${label(sources[0])}'s answer")` : '',
+    targets.length ? `Sends its answers to ${targets.map(label).join(', ')}` : '', 'Open the Flow page to change connections'].filter(Boolean).join('\n');
   ui.linksBtn.classList.toggle('hidden', panes.length < 2);
   ui.removeBtn.classList.toggle('hidden', panes.length < 2);
   ui.sendBtn.innerHTML = '';
@@ -704,10 +708,36 @@ function paintStream(p, msg) {
   });
 }
 
+// Latest question + answer of every chat wired INTO this one, so the user can say "verify Chat 1's answer"
+// even if nothing travelled along the wire yet. Skipped when that answer is already in this chat's history.
+function incomingContext(p) {
+  const clip = (t, n) => (t.length > n ? t.slice(0, n) + '\n…(shortened)' : t);
+  return panes
+    .filter((o) => o !== p && o.links.some((l) => l.to === p.id))
+    .map((o) => {
+      const ai = o.messages.reduce((found, m, i) => (m.role === 'assistant' && m.content && !m.streaming ? i : found), -1);
+      if (ai < 0) return null;
+      const answer = o.messages[ai].content;
+      const head = answer.slice(0, 160);
+      if (p.messages.some((m) => m.content && m.content.includes(head))) return null;
+      const q = [...o.messages.slice(0, ai)].reverse().find((m) => m.role === 'user');
+      return { from: label(o), skill: skillById(o.skillId)?.name || '', question: clip(q?.content || '', 6000), answer: clip(answer, 10000) };
+    })
+    .filter(Boolean);
+}
+
 async function streamChat(skillId, history, signal, msg, p) {
   const res = await fetch('/api/chat/stream', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
-    body: JSON.stringify({ skillId, messages: history, providerId: p.providerId || 'auto', rich: !!p.smart }),
+    body: JSON.stringify((() => {
+      const s = skillById(skillId);
+      return {
+        skillId, messages: history, providerId: p.providerId || 'auto', rich: !!p.smart,
+        // The skill exactly as shown in the app, so the model always follows the current instructions.
+        skill: s ? { id: s.id, name: s.name, description: s.description || '', instructions: s.instructions || '', provider: s.provider || 'auto' } : undefined,
+        context: incomingContext(p),
+      };
+    })()),
   });
   if (!res.ok) { const b = await res.json().catch(() => ({})); handleAuthError(res.status, b); throw new Error(b.error || res.statusText); }
   const reader = res.body.getReader();

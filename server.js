@@ -92,6 +92,24 @@ function cleanAttachments(list) {
   return out.length ? out : undefined;
 }
 
+const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+
+function cleanSkill(s) {
+  if (!s || typeof s !== 'object' || typeof s.name !== 'string' || !s.name.trim()) return null;
+  return {
+    id: str(s.id, 120), name: str(s.name, 120).trim(), description: str(s.description, 500),
+    instructions: str(s.instructions, 40_000), provider: str(s.provider, 80) || 'auto',
+  };
+}
+
+// Latest exchange from chats wired into this one (max 5 chats, trimmed).
+function cleanContext(list) {
+  if (!Array.isArray(list)) return [];
+  return list.slice(0, 5)
+    .map((c) => ({ from: str(c?.from, 40).replace(/"/g, ''), skill: str(c?.skill, 120).replace(/"/g, ''), question: str(c?.question, 8000), answer: str(c?.answer, 12_000) }))
+    .filter((c) => c.from && c.answer);
+}
+
 function validSkill(s) {
   return s && typeof s.id === 'string' && s.id && typeof s.name === 'string' && s.name.trim();
 }
@@ -162,10 +180,15 @@ async function handleApi(req, res, url) {
   }
 
   if ((url.pathname === '/api/chat' || url.pathname === '/api/chat/stream') && req.method === 'POST') {
-    const { skillId, messages, providerId, rich } = await readBody(req, MAX_CHAT_BODY);
+    const { skillId, skill: sentSkill, context, messages, providerId, rich } = await readBody(req, MAX_CHAT_BODY);
     const chosen = typeof providerId === 'string' && /^[a-z0-9-]{1,80}$/.test(providerId) ? providerId : 'auto';
-    const skill = readSkills().find((s) => s.id === skillId);
-    if (!skill) return sendJson(res, 400, { error: 'Unknown skill' });
+    // The browser sends the skill it shows, so the model always gets the instructions you see, even when this
+    // server's copy is stale (serverless hosts can run several instances with temporary storage).
+    const stored = readSkills().find((s) => s.id === skillId);
+    const fromClient = cleanSkill(sentSkill);
+    const skill = fromClient ? { ...fromClient, provider: stored?.provider || fromClient.provider || 'auto' } : stored;
+    if (!skill) return sendJson(res, 400, { error: 'Unknown skill. Reload the page and pick a skill.' });
+    const sharedContext = cleanContext(context);
     if (!Array.isArray(messages) || !messages.length) return sendJson(res, 400, { error: 'No messages' });
     const clean = messages
       .filter((m) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
@@ -176,7 +199,7 @@ async function handleApi(req, res, url) {
       .filter((m) => m.content || m.attachments);
     if (!clean.length || clean[clean.length - 1].role !== 'user') return sendJson(res, 400, { error: 'Last message must be from the user' });
 
-    if (url.pathname === '/api/chat') return sendJson(res, 200, await router.chat({ skill, messages: clean, providerId: chosen, rich: !!rich }));
+    if (url.pathname === '/api/chat') return sendJson(res, 200, await router.chat({ skill, messages: clean, providerId: chosen, rich: !!rich, context: sharedContext }));
 
     // Streaming: newline-delimited JSON events {type: token|reset|done|error}.
     const ac = new AbortController();
@@ -185,7 +208,7 @@ async function handleApi(req, res, url) {
     const emit = (ev) => { if (!res.writableEnded) res.write(JSON.stringify(ev) + '\n'); };
     try {
       const result = await router.chat({
-        skill, messages: clean, providerId: chosen, rich: !!rich, signal: ac.signal,
+        skill, messages: clean, providerId: chosen, rich: !!rich, context: sharedContext, signal: ac.signal,
         onToken: (text) => emit({ type: 'token', text }),
         onReset: (failed) => emit({ type: 'reset', failed }),
       });
