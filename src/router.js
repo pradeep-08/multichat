@@ -1,7 +1,6 @@
 // Provider router: picks free + healthy + fastest provider, fails over on error.
-// Tracks per-provider calls, success rate, latency, tokens, cost and daily quotas (persisted to data/usage.json).
-const fs = require('fs');
-const path = require('path');
+// Tracks per-provider calls, success rate, latency, tokens, cost and daily quotas (saved through src/storage.js).
+const storage = require('./storage');
 const { textWithFiles, neededKinds } = require('./attachments');
 
 const adapters = {
@@ -11,16 +10,12 @@ const adapters = {
   gemini: require('./adapters/gemini'),
 };
 
-const CONFIG = path.join(__dirname, '..', 'config', 'providers.json');
-const EXAMPLE = path.join(__dirname, '..', 'config', 'providers.example.json');
-const USAGE_FILE = path.join(__dirname, '..', 'data', 'usage.json');
 const COOLDOWN_MS = 60_000;
 const RATE_LIMIT_COOLDOWN_MS = 5 * 60_000;
 const AUTH_COOLDOWN_MS = 30 * 60_000;
 
-let configFile = fs.existsSync(CONFIG) ? CONFIG : EXAMPLE;
-// Raw provider configs as stored on disk (apiKey may be "env:NAME", a saved key, or absent for keyless providers).
-let rawConfigs = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+// Raw provider configs as stored (apiKey may be "env:NAME", a saved key, or absent for keyless providers).
+let rawConfigs = storage.read('providers', []);
 
 function normalize(p) {
   const fromEnv = typeof p.apiKey === 'string' && p.apiKey.startsWith('env:');
@@ -39,10 +34,8 @@ function normalize(p) {
 let providers = rawConfigs.map(normalize);
 const today = () => new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD, local time
 
-function loadUsage() {
-  try { return JSON.parse(fs.readFileSync(USAGE_FILE, 'utf8')); } catch { return {}; }
-}
-const saved = loadUsage();
+let saved = {};
+try { saved = storage.read('usage', {}) || {}; } catch { saved = {}; } // stats are optional: a broken file just starts fresh
 const stats = {};
 function ensureStats(id) {
   if (stats[id]) return;
@@ -66,7 +59,7 @@ function scheduleSave() {
       const { cooldownUntil, lastError, ...persist } = s;
       out[id] = persist;
     }
-    try { fs.writeFileSync(USAGE_FILE, JSON.stringify(out, null, 2)); } catch (err) { console.error('Could not save usage:', err.message); }
+    storage.write('usage', out);
   }, 1000);
 }
 
@@ -110,7 +103,8 @@ function ranked(pinned, kinds = []) {
     .filter((p) => !pinned || pinned === 'auto' || p.id === pinned)
     .filter(available)
     .filter((p) => canRead(p, kinds))
-    .sort((a, b) => (b.free === true) - (a.free === true) || score(a) - score(b));
+    // Mock APIs are a last resort; then free before paid; then fastest / most reliable.
+    .sort((a, b) => (a.type === 'mock') - (b.type === 'mock') || (b.free === true) - (a.free === true) || score(a) - score(b));
 }
 
 function cooldownFor(err) {
@@ -277,8 +271,7 @@ function sanitize(input, existing) {
 }
 
 function persist() {
-  fs.writeFileSync(CONFIG, JSON.stringify(rawConfigs, null, 2));
-  configFile = CONFIG;
+  storage.write('providers', rawConfigs);
   providers = rawConfigs.map(normalize);
   providers.forEach((p) => ensureStats(p.id));
 }
@@ -329,5 +322,5 @@ async function testProvider(id) {
 
 module.exports = {
   chat, status, resetStats, addProvider, updateProvider, deleteProvider, testProvider,
-  get configFile() { return configFile; },
+  get configFile() { return storage.describe('providers'); },
 };

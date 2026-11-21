@@ -18,8 +18,57 @@ function h(tag, attrs = {}, ...children) {
 async function api(url, opts = {}) {
   const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error || res.statusText);
+  if (!res.ok) { handleAuthError(res.status, body); throw new Error(body.error || res.statusText); }
   return body;
+}
+
+// The server answers 401 (sign in) or 503 + setup (no password configured on a public host).
+function handleAuthError(status, body) {
+  if (status === 401 && body.login) showGate('login');
+  if (status === 503 && body.setup) showGate('setup', body.error);
+}
+
+// Full-screen sign-in / setup screen, in the app's theme.
+function showGate(kind, message) {
+  if (document.getElementById('gate')) return;
+  const err = h('p', { class: 'form-error hidden' });
+  let card;
+  if (kind === 'setup') {
+    card = h('div', { class: 'gate-card' },
+      h('span', { class: 'logo' }, icon('spark')),
+      h('h2', {}, 'Set a password first'),
+      h('p', {}, message || 'This server is reachable from the internet but has no password, so the API is locked.'),
+      h('ol', { class: 'gate-steps' },
+        h('li', {}, 'In your hosting dashboard, add an environment variable named ', h('code', {}, 'APP_PASSWORD'), ' with a strong password.'),
+        h('li', {}, 'Also add your API keys as environment variables (for example ', h('code', {}, 'GROQ_API_KEY'), ').'),
+        h('li', {}, 'Redeploy or restart, then reload this page.')),
+      h('button', { onclick: () => location.reload() }, 'Reload'));
+  } else {
+    const input = h('input', { type: 'password', placeholder: 'Password', autocomplete: 'current-password', 'aria-label': 'Password' });
+    const submit = async (e) => {
+      e.preventDefault();
+      err.classList.add('hidden');
+      try {
+        const res = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: input.value }) });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || res.statusText);
+        location.reload();
+      } catch (ex) { err.textContent = ex.message; err.classList.remove('hidden'); input.select(); }
+    };
+    card = h('form', { class: 'gate-card', onsubmit: submit },
+      h('span', { class: 'logo' }, icon('spark')),
+      h('h2', {}, 'Sign in to MultiChat'),
+      h('p', {}, 'This MultiChat is password protected.'),
+      input, err,
+      h('button', { type: 'submit' }, 'Sign in'));
+    setTimeout(() => input.focus(), 0);
+  }
+  document.body.append(h('div', { id: 'gate', class: 'gate' }, card));
+}
+
+async function signOut() {
+  await fetch('/api/logout', { method: 'POST' }).catch(() => {});
+  location.reload();
 }
 
 // ---------- themed dialogs (instead of the browser's alert / confirm) ----------
@@ -493,7 +542,7 @@ async function streamChat(skillId, history, signal, msg, p) {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
     body: JSON.stringify({ skillId, messages: history }),
   });
-  if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || res.statusText); }
+  if (!res.ok) { const b = await res.json().catch(() => ({})); handleAuthError(res.status, b); throw new Error(b.error || res.statusText); }
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = '';
@@ -1293,11 +1342,22 @@ $('#btnExport').addEventListener('click', exportChats);
 $('#btnAddChat').addEventListener('click', () => { showView('chats'); addPane(); });
 $('#btnTheme').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
 $('#btnCollapse').addEventListener('click', toggleSidebar);
+$('#btnSignOut').addEventListener('click', signOut);
 setTheme(document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light');
 
 (async function init() {
   renderAll();
-  try { skills = await api('/api/skills'); } catch (err) { toast('Server not reachable: ' + err.message + '. Is it running?', 'error', 0); return; }
+  let session;
+  try { session = await api('/api/session'); } catch (err) { toast('Server not reachable: ' + err.message + '. Is it running?', 'error', 0); return; }
+  if (session.mode === 'locked') return showGate('setup');
+  if (!session.authed) return showGate('login');
+  if (session.mode === 'password') $('#btnSignOut').classList.remove('hidden');
+  if (session.storage && !session.storage.persistent) {
+    toast(session.storage.onVercel
+      ? 'On Vercel, APIs and skills you add here are temporary and reset when the server restarts. Keep API keys in Vercel environment variables.'
+      : 'Changes can’t be saved on this server’s disk; they last until it restarts.', 'info', 15000);
+  }
+  try { skills = await api('/api/skills'); } catch (err) { toast('Could not load skills: ' + err.message, 'error', 0); return; }
   panes.forEach((p, i) => { if (!skillById(p.skillId)) p.skillId = skills[i % skills.length]?.id ?? null; });
   savePanes();
   renderAll();

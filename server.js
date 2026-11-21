@@ -1,24 +1,27 @@
 // MultiChat server — no dependencies. Serves the UI and the JSON API.
+// Run directly with `npm start`, or import { handler } on serverless hosts (see api/index.js for Vercel).
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const router = require('./src/router');
+const storage = require('./src/storage');
+const auth = require('./src/auth');
 
 const PORT = Number(process.env.PORT) || 3000;
 // Local only by default: the UI can read and change API settings, so it must not be open to the network.
-const HOST = process.env.HOST || '127.0.0.1';
+// Hosting platforms route traffic from outside the container, so listen on all interfaces there.
+const ON_PLATFORM = !!(process.env.RENDER || process.env.RAILWAY_ENVIRONMENT || process.env.FLY_APP_NAME || process.env.K_SERVICE);
+const HOST = process.env.HOST || (ON_PLATFORM ? '0.0.0.0' : '127.0.0.1');
+const ACCESS = auth.accessMode(HOST);
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const SKILLS_FILE = path.join(__dirname, 'data', 'skills.json');
 const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.json': 'application/json', '.svg': 'image/svg+xml' };
 
-// First run (fresh clone): start from the sample skills. data/skills.json is git-ignored so your own skills stay local.
-const SKILLS_EXAMPLE = path.join(__dirname, 'data', 'skills.example.json');
-if (!fs.existsSync(SKILLS_FILE) && fs.existsSync(SKILLS_EXAMPLE)) fs.copyFileSync(SKILLS_EXAMPLE, SKILLS_FILE);
-const readSkills = () => JSON.parse(fs.readFileSync(SKILLS_FILE, 'utf8'));
-const writeSkills = (skills) => fs.writeFileSync(SKILLS_FILE, JSON.stringify(skills, null, 2));
+// Skills: data/skills.json (git-ignored, your own) or, on a fresh copy, data/skills.example.json.
+const readSkills = () => storage.read('skills', []);
+const writeSkills = (skills) => storage.write('skills', skills);
 
-function sendJson(res, status, body) {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
+function sendJson(res, status, body, headers = {}) {
+  res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...headers });
   res.end(JSON.stringify(body));
 }
 
@@ -55,6 +58,27 @@ function validSkill(s) {
 }
 
 async function handleApi(req, res, url) {
+  // ---- public endpoints: session state and login ----
+  if (url.pathname === '/api/session' && req.method === 'GET') {
+    return sendJson(res, 200, { mode: ACCESS, authed: ACCESS === 'open' || (ACCESS === 'password' && auth.hasSession(req)), storage: storage.status() });
+  }
+  if (url.pathname === '/api/login' && req.method === 'POST') {
+    if (ACCESS !== 'password') return sendJson(res, 400, { error: 'Login is not enabled on this server' });
+    const { password } = await readBody(req, 10_000);
+    if (!auth.checkPassword(password)) {
+      await new Promise((r) => setTimeout(r, 800)); // slow down password guessing
+      return sendJson(res, 401, { error: 'Wrong password' });
+    }
+    return sendJson(res, 200, { ok: true }, { 'Set-Cookie': auth.sessionCookie(req) });
+  }
+  if (url.pathname === '/api/logout' && req.method === 'POST') return sendJson(res, 200, { ok: true }, { 'Set-Cookie': auth.clearCookie(req) });
+
+  // ---- everything else needs access ----
+  if (ACCESS === 'locked') {
+    return sendJson(res, 503, { error: 'This server is reachable from the internet but has no password. Set the APP_PASSWORD environment variable, then restart or redeploy.', setup: true });
+  }
+  if (ACCESS === 'password' && !auth.hasSession(req)) return sendJson(res, 401, { error: 'Please sign in', login: true });
+
   if (url.pathname === '/api/skills' && req.method === 'GET') return sendJson(res, 200, readSkills());
 
   if (url.pathname === '/api/skills' && req.method === 'POST') {
@@ -131,6 +155,7 @@ async function handleApi(req, res, url) {
 }
 
 function serveStatic(res, url) {
+  if (url.pathname.startsWith('/__')) { res.writeHead(404); return res.end('Not found'); }
   const rel = url.pathname === '/' ? 'index.html' : decodeURIComponent(url.pathname).replace(/^\/+/, '');
   const file = path.resolve(PUBLIC_DIR, rel);
   if (!file.startsWith(PUBLIC_DIR + path.sep)) { res.writeHead(403); return res.end(); }
@@ -141,7 +166,7 @@ function serveStatic(res, url) {
   });
 }
 
-http.createServer(async (req, res) => {
+async function handler(req, res) {
   const url = new URL(req.url, 'http://localhost');
   try {
     if (url.pathname.startsWith('/api/')) await handleApi(req, res, url);
@@ -150,11 +175,16 @@ http.createServer(async (req, res) => {
     if (res.headersSent) res.end();
     else sendJson(res, err.status && err.status < 500 ? err.status : 500, { error: err.message });
   }
-}).on('error', (err) => {
+}
+module.exports = { handler };
+
+if (require.main === module) http.createServer(handler).on('error', (err) => {
   if (err.code === 'EADDRINUSE') console.error(`Port ${PORT} is already in use. Start on another port, e.g.  PORT=3001 npm start  (PowerShell: $env:PORT=3001; npm start)`);
   else console.error(err);
   process.exit(1);
 }).listen(PORT, HOST, () => {
   console.log(`MultiChat running at http://localhost:${PORT}${HOST === '127.0.0.1' ? ' (this computer only)' : ` (listening on ${HOST})`}`);
-  console.log(`Providers from ${path.relative(__dirname, router.configFile)}`);
+  console.log(`Providers from ${router.configFile}`);
+  if (ACCESS === 'password') console.log('Login required (APP_PASSWORD is set).');
+  if (ACCESS === 'locked') console.warn('WARNING: reachable from the network without APP_PASSWORD. The API stays locked until you set it.');
 });

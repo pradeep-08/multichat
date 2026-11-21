@@ -418,3 +418,14 @@ button.danger-solid:hover { background: #b91c1c; }
 @keyframes pop-in { from { opacity: 0; transform: translateY(6px) scale(.98); } }
 @keyframes slide-in { from { opacity: 0; transform: translateX(12px); } }
 @media (prefers-reduced-motion: reduce) { .modal, .modal-overlay, .toast { animation: none !important; } }
+
+/* ---------- sign-in / setup screen ---------- */
+.gate { position: fixed; inset: 0; z-index: 120; display: grid; place-items: center; padding: 16px; background: var(--bg); }
+.gate-card { width: min(400px, 100%); background: var(--panel); border: 1px solid var(--border); border-radius: 20px; box-shadow: var(--shadow-lg); padding: 28px; display: flex; flex-direction: column; gap: 12px; }
+.gate-card .logo { width: 40px; height: 40px; border-radius: 12px; }
+.gate-card .logo svg { width: 20px; height: 20px; }
+.gate-card h2 { margin: 4px 0 0; font-size: 20px; font-weight: 600; letter-spacing: -.02em; }
+.gate-card p { margin: 0; color: var(--muted); }
+.gate-card button { margin-top: 4px; padding: 10px 14px; }
+.gate-steps { margin: 0; padding-left: 20px; color: var(--text); font-size: 13px; display: flex; flex-direction: column; gap: 6px; }
+.gate-steps code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 1px 5px; }
